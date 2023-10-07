@@ -59,3 +59,9 @@ gdb_ns() {
     gdb -x "${SCRIPT_DIR}/gdbinit" -p ${pid}
 
 }
+
+dbg() {
+    prepare_env
+
+    wine64 "${SCRIPT_DIR}/release/x64/x64dbg.exe"
+}
