@@ -49,6 +49,7 @@ def get_args():
     parser.add_argument("debugger", choices=["x64dbg"], help="Specify which debugger you want to run the game in")
     parser.add_argument("--install-ea", action="store_true", help="Install EA Desktop app if needed")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--no-ea", action="store_true", help="Don't start the EA App")
     parser.add_argument("--kill-ea", action="store_true", help="Kill EA Desktop on exit")
 
     args = parser.parse_args()
@@ -331,7 +332,10 @@ def main():
     c = compat_map[pargs.compat](g)
     d = debug_map[pargs.debugger](g, c)
 
-    ea = c.maybe_start_ea()
+    ea = None
+    if not pargs.no_ea:
+        ea = c.maybe_start_ea()
+
     d.run().wait()
 
     if pargs.kill_ea and ea:
