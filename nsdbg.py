@@ -75,6 +75,7 @@ class Game:
         self.log = logging.getLogger("nsgdb.game")
 
         self.game_dir = self.find_titanfall2()
+        self.log.info(f"Using game at {self.game_dir}")
 
     def find_titanfall2(self):
         game_dir = os.getenv("TF2_GAME_DIR")
@@ -156,6 +157,9 @@ class CompatWine(CompatBase):
 
         # DXVK
         env_vars.setdefault("DXVK_LOG_LEVEL", "none")
+        # VKD3D
+        env_vars.setdefault("VKD3D_DEBUG", "none")
+        env_vars.setdefault("VKD3D_SHADER_DEBUG", "none")
 
         kwargs.update({
             "stdin": subprocess.DEVNULL,
@@ -265,6 +269,9 @@ class CompatProton(CompatBase):
 
         # DXVK
         env_vars.setdefault("DXVK_LOG_LEVEL", "none")
+        # VKD3D
+        env_vars.setdefault("VKD3D_DEBUG", "none")
+        env_vars.setdefault("VKD3D_SHADER_DEBUG", "none")
 
         self.log.debug(f"Using prefix: {env_vars.get('WINEPREFIX')}")
 
