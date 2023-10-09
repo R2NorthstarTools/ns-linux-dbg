@@ -142,7 +142,17 @@ class CompatWine(CompatBase):
 
     def run(self, *args, **kwargs):
         env_vars = dict(os.environ)
+
+        # Wine
+        env_vars.setdefault("WINELOADAERNOEXEC", "1")
         env_vars.setdefault("WINEDEBUG", "-all")
+        env_vars.setdefault("WINEPREFIX", self.__get_wineprefix())
+        env_vars.setdefault("WINEESYNC", "1")
+        env_vars.setdefault("WINEFSYNC", "1")
+        env_vars["WINEDLLOVERRIDES"] = append_args("wsock32=n,b;steam.exe=b;dotnetfx35.exe=b;dotnetfx35setup.exe=b;beclient.dll=b,n;beclient_x64.dll=b,n;d3d11=n;d3d10core=n;d3d9=n;dxgi=n;d3d12=n;d3d12core=n", env_vars.get("WINEDLLOVERRIDES"), ";")
+        
+        # DXVK
+        env_vars.setdefault("DXVK_LOG_LEVEL", "none")
 
         kwargs.update({
             "stdin": subprocess.DEVNULL,
@@ -230,22 +240,28 @@ class CompatProton(CompatBase):
     def run(self, *args, **kwargs):
         env_vars = dict(os.environ)
         env_vars.setdefault("TERM", "xterm")
+
+        # Proton
+        env_vars.setdefault("SteamGameId", str(TITANFALL2_APPID))
+        env_vars.setdefault("SteamAppId", str(TITANFALL2_APPID))
+        env_vars.setdefault("STEAM_COMPAT_CLIENT_INSTALL_PATH", self.steam_path)
+
+        # Wine
+        env_vars.setdefault("WINELOADAERNOEXEC", "1")
         env_vars["PATH"] = append_args(f"{self.compattool}/files/bin", env_vars.get("PATH"), ":")
         env_vars.setdefault("WINEDEBUG", "-all")
         env_vars["WINEDLLPATH"] = prepend_args(f"{self.compattool}/files/lib64/wine:{self.compattool}/files/lib/wine", env_vars.get("WINEDLLPATH"), ":")
         env_vars.setdefault("LD_LIBRARY_PATH", append_args(f"{self.compattool}/files/lib64/:{self.compattool}/files/lib/:{self.game.game_dir}", env_vars.get("LD_LIBRARY_PATH"), ":"))
-        env_vars.setdefault("WINEPREFIX", str(os.path.join(self.compatdir, "pfx")))
+        env_vars.setdefault("WINEPREFIX", self.__get_wineprefix())
         env_vars.setdefault("WINEESYNC", "1")
         env_vars.setdefault("WINEFSYNC", "1")
-        env_vars.setdefault("SteamGameId", str(TITANFALL2_APPID))
-        env_vars.setdefault("SteamAppId", str(TITANFALL2_APPID))
         env_vars["WINEDLLOVERRIDES"] = append_args("wsock32=n,b;steam.exe=b;dotnetfx35.exe=b;dotnetfx35setup.exe=b;beclient.dll=b,n;beclient_x64.dll=b,n;d3d11=n;d3d10core=n;d3d9=n;dxgi=n;d3d12=n;d3d12core=n", env_vars.get("WINEDLLOVERRIDES"), ";")
-        env_vars.setdefault("STEAM_COMPAT_CLIENT_INSTALL_PATH", self.steam_path)
         env_vars.setdefault("WINE_LARGE_ADDRESS_AWARE", "1")
         env_vars["GST_PLUGIN_SYSTEM_PATH_1_0"] = prepend_args(f"{self.compattool}/files/lib64/gstreamer-1.0:{self.compattool}/files/lib/gstreamer-1.0", env_vars.get("GST_PLUGIN_SYSTEM_PATH_1_0"), ":")
         env_vars.setdefault("WINE_GST_REGISTRY_DIR", f"{self.compatdir}/gstreamer-1.0/")
 
-        env_vars["DXVK_LOG_LEVEL"] = "none"
+        # DXVK
+        env_vars.setdefault("DXVK_LOG_LEVEL", "none")
 
         self.log.debug(f"Using prefix: {env_vars.get('WINEPREFIX')}")
 
@@ -262,6 +278,9 @@ class CompatProton(CompatBase):
             cmd,
             **kwargs
         )
+
+    def __get_wineprefix(self) -> str:
+        return str(os.path.join(self.compatdir, "pfx"))
 
     def start_ea(self):
         # link2ea implicitly authenticates via Steam
