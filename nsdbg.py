@@ -121,7 +121,7 @@ class CompatBase(ABC):
     def start_ea(self):
         ...
 
-    def maybe_start_ea(self):
+    def is_ea_running(self) -> bool:
         possible_names = [
             "EADesktop.exe",
             "EABackgroundSer"
@@ -129,7 +129,10 @@ class CompatBase(ABC):
 
         ea_desktop_running = any(p.name() for p in psutil.process_iter(attrs=['name']) if p.name() in possible_names)
 
-        if ea_desktop_running:
+        return ea_desktop_running
+
+    def maybe_start_ea(self):
+        if self.is_ea_running():
             self.log.debug("EA App already running, not starting it again")
             return None
 
@@ -140,7 +143,7 @@ class CompatWine(CompatBase):
     ea_desktop_path = ("Program Files", "Electronic Arts", "EA Desktop", "EA Desktop")
     ea_desktop_exe = "EADesktop.exe"
 
-    def run(self, *args, **kwargs):
+    def run(self, *pargs, **kwargs):
         env_vars = dict(os.environ)
 
         # Wine
@@ -150,7 +153,7 @@ class CompatWine(CompatBase):
         env_vars.setdefault("WINEESYNC", "1")
         env_vars.setdefault("WINEFSYNC", "1")
         env_vars["WINEDLLOVERRIDES"] = append_args("wsock32=n,b;steam.exe=b;dotnetfx35.exe=b;dotnetfx35setup.exe=b;beclient.dll=b,n;beclient_x64.dll=b,n;d3d11=n;d3d10core=n;d3d9=n;dxgi=n;d3d12=n;d3d12core=n", env_vars.get("WINEDLLOVERRIDES"), ";")
-        
+
         # DXVK
         env_vars.setdefault("DXVK_LOG_LEVEL", "none")
 
@@ -160,8 +163,8 @@ class CompatWine(CompatBase):
             "env": env_vars
         })
 
-        cmd = ["wine"] + list(args)
-        log.debug(f"Running {cmd}")
+        cmd = ["wine"] + list(pargs)
+        self.log.debug(f"Running {cmd}")
         return subprocess.Popen(
             cmd,
             **kwargs
@@ -286,8 +289,14 @@ class CompatProton(CompatBase):
         # link2ea implicitly authenticates via Steam
         p = self.run("steam.exe", "link2ea://launchgame/0?platform=steam&theme=tf2")
 
-        # Give it a second to start up
-        time.sleep(5)
+        # The EA app is not the fastest thing, give it a second to launch
+        counter = 0
+        while counter < 10:
+            if self.is_ea_running():
+                break
+
+            self.log.info("EA App not yet running, sleeping")
+            time.sleep(5)
 
         return p
 
@@ -326,15 +335,16 @@ class DebuggerX64DBG(DebuggerBase):
             self.__download()
 
     def __download(self):
-        log.info("Downloading x64dbg")
+        self.log.info("Downloading x64dbg")
 
         resp = urlopen("https://sourceforge.net/projects/x64dbg/files/latest/download")
         archive = ZipFile(BytesIO(resp.read()))
 
-        log.info("Extracting x64dbg")
+        self.log.info("Extracting x64dbg")
         archive.extractall(path=self.path)
 
-    def run(self):
+    def run(self, *pargs):
+        # x64dbg only supports directly launching 
         return self.compat.run(self.path_64_exe, cwd=self.game.game_dir)
 
 debug_map = {
@@ -358,6 +368,7 @@ def main():
     d.run().wait()
 
     if pargs.kill_ea and ea:
+        self.log.info("Attempting to kill EA Desktop")
         ea.kill()
 
 if __name__ == "__main__":
