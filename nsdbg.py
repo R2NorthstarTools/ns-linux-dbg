@@ -17,9 +17,9 @@ import signal
 import psutil
 try:
     from protontricks import (
-        find_steam_path, get_steam_apps,
-        get_steam_lib_paths, util,
-        winetricks
+        find_steam_path, find_proton_app,
+        get_steam_apps, get_steam_lib_paths,
+        util, winetricks
     )
 except ImportError:
     raise Exception("nsdbg needs Protontricks to function")
