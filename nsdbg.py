@@ -12,12 +12,17 @@ from io import BytesIO
 from zipfile import ZipFile
 from urllib.request import urlopen
 import time
+import signal
 
 import psutil
 try:
-    from protontricks import *
+    from protontricks import (
+        find_steam_path, get_steam_apps,
+        get_steam_lib_paths, util,
+        winetricks
+    )
 except ImportError:
-    raise Exception("nsgdb needs Protontricks to function")
+    raise Exception("nsdbg needs Protontricks to function")
 
 SCRIPT = os.path.abspath(os.path.dirname(__file__))
 CACHE_DIR = os.path.join(SCRIPT, "cache")
@@ -46,11 +51,10 @@ def get_args():
     )
 
     parser.add_argument("--compat", choices=["wine", "proton"], default="proton", help="Selects what compatibility layer will be used")
-    parser.add_argument("debugger", choices=["x64dbg"], help="Specify which debugger you want to run the game in")
-    parser.add_argument("--install-ea", action="store_true", help="Install EA Desktop app if needed")
+    parser.add_argument("debugger", choices=["x64dbg", "winedbg"], help="Specify which debugger you want to run the game in")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--no-ea", action="store_true", help="Don't start the EA App")
-    parser.add_argument("--kill-ea", action="store_true", help="Kill EA Desktop on exit")
+    parser.add_argument("--persist-ea", action="store_true", help="Keep EA Desktop open")
 
     args = parser.parse_args()
     return args
@@ -58,13 +62,7 @@ def get_args():
 pargs = get_args()
 enable_logging(pargs.verbose)
 
-log = logging.getLogger("nsgdb")
-
-if pargs.compat == "wine":
-    log.warning("Stock wine is known to have problems with the EA App")
-
-if pargs.install_ea and pargs.compat == "proton":
-    log.warning("Not installing EA Desktop into Proton prefix")
+log = logging.getLogger("nsdbg")
 
 ### Game ###
 
@@ -72,7 +70,7 @@ TITANFALL2_APPID = 1237970
 class Game:
 
     def __init__(self):
-        self.log = logging.getLogger("nsgdb.game")
+        self.log = logging.getLogger("nsdbg.game")
 
         self.game_dir = self.find_titanfall2()
         self.log.info(f"Using game at {self.game_dir}")
@@ -109,7 +107,7 @@ class Game:
 class CompatBase(ABC):
 
     def __init__(self, game):
-        self.log = logging.getLogger("nsgdb.compat")
+        self.log = logging.getLogger("nsdbg.compat")
         self.log.debug(f"Using {self.__class__.__name__}")
 
         self.game = game
@@ -119,7 +117,7 @@ class CompatBase(ABC):
         ...
 
     @abstractmethod
-    def start_ea(self):
+    def start_ea(self, **kwargs):
         ...
 
     def is_ea_running(self) -> bool:
@@ -132,12 +130,25 @@ class CompatBase(ABC):
 
         return ea_desktop_running
 
-    def maybe_start_ea(self):
+    def wait_for_ea(self, attempts: int = 10):
+        # The EA app is not the fastest thing, give it a second to launch
+        counter = 0
+        self.log.info("Waiting for EA Desktop app to start")
+
+        while counter < attempts:
+            if self.is_ea_running():
+                return
+
+            time.sleep(5)
+
+        self.log.info("Skipping wait")
+
+    def maybe_start_ea(self, **kwargs):
         if self.is_ea_running():
             self.log.debug("EA App already running, not starting it again")
             return None
 
-        return self.start_ea()
+        return self.start_ea(**kwargs)
 
 class CompatWine(CompatBase):
     # Program Files\Electronic Arts\EA Desktop\EA Desktop
@@ -146,14 +157,11 @@ class CompatWine(CompatBase):
 
     def run(self, *pargs, **kwargs):
         env_vars = dict(os.environ)
+        env_vars.setdefault("TERM", "xterm")
 
         # Wine
-        env_vars.setdefault("WINELOADAERNOEXEC", "1")
         env_vars.setdefault("WINEDEBUG", "-all")
-        env_vars.setdefault("WINEPREFIX", self.__get_wineprefix())
-        env_vars.setdefault("WINEESYNC", "1")
-        env_vars.setdefault("WINEFSYNC", "1")
-        env_vars["WINEDLLOVERRIDES"] = append_args("wsock32=n,b;steam.exe=b;dotnetfx35.exe=b;dotnetfx35setup.exe=b;beclient.dll=b,n;beclient_x64.dll=b,n;d3d11=n;d3d10core=n;d3d9=n;dxgi=n;d3d12=n;d3d12core=n", env_vars.get("WINEDLLOVERRIDES"), ";")
+        env_vars["WINEDLLOVERRIDES"] = append_args("wsock32=n", env_vars.get("WINEDLLOVERRIDES"), ";")
 
         # DXVK
         env_vars.setdefault("DXVK_LOG_LEVEL", "none")
@@ -162,13 +170,13 @@ class CompatWine(CompatBase):
         env_vars.setdefault("VKD3D_SHADER_DEBUG", "none")
 
         kwargs.update({
-            "stdin": subprocess.DEVNULL,
             "close_fds": True,
             "env": env_vars
         })
 
         cmd = ["wine"] + list(pargs)
         self.log.debug(f"Running {cmd}")
+
         return subprocess.Popen(
             cmd,
             **kwargs
@@ -191,13 +199,37 @@ class CompatWine(CompatBase):
 
         return os.path.isfile(prefix_ea_exe)
 
-    def start_ea(self):
-        if not self.__ea_installed():
-            global pargs
-            if not pargs.install_ea:
-                raise Exception("The EA Desktop app is not available")
+    def __winetricks(self, verb: str, **kwargs):
+        winetricks_path = winetricks.get_winetricks_path()
+        if not winetricks_path:
+            raise Exception("Failed to find winetricks")
 
+        winetricks_cmd = [winetricks_path, '--unattended'] + verb.split(' ')
+
+        log.debug(f"Installing '{verb}' via winetricks")
+
+        env_vars = dict(os.environ)
+        env_vars.setdefault("WINEDEBUG", "-all")
+        env_vars['WINETRICKS_LATEST_VERSION_CHECK'] = 'disabled'
+        env_vars['LD_PRELOAD'] = ''
+
+        p = subprocess.Popen(
+            winetricks_cmd,
+            **kwargs
+        )
+        p.wait()
+
+        return p
+
+
+
+    def start_ea(self, **kwargs):
+        if not self.__ea_installed():
+            self.log.info("EA Desktop was not found")
             installer = os.path.join(self.game.game_dir, "__Installer", "Origin", "redist", "internal", "EAappInstaller.exe")
+
+            self.log.info("Installing needed dependencies")
+            self.__winetricks('d3dcompiler_47')
 
             self.log.info("Installing EA Desktop")
             self.run(installer).wait()
@@ -206,7 +238,12 @@ class CompatWine(CompatBase):
                 raise Exception("Failed to install EA Desktop")
 
         ea_path = ntpath.join("C:\\", *self.ea_desktop_path, self.ea_desktop_exe)
-        return self.run(ea_path)
+
+        self.log.info("Starting EA app")
+        p = self.run(ea_path, **kwargs)
+
+        self.wait_for_ea()
+        return p
 
 class CompatProton(CompatBase):
     compatdir = None
@@ -241,7 +278,8 @@ class CompatProton(CompatBase):
         self.compattool = proton_app.install_path
 
         if not self.compattool:
-            print("Failed to find Proton version")
+            raise Exception("Failed to find Proton version")
+
         self.log.debug(f"Compatibility tool: {self.compattool}")
 
     def run(self, *args, **kwargs):
@@ -292,19 +330,11 @@ class CompatProton(CompatBase):
     def __get_wineprefix(self) -> str:
         return str(os.path.join(self.compatdir, "pfx"))
 
-    def start_ea(self):
+    def start_ea(self, **kwargs):
         # link2ea implicitly authenticates via Steam
-        p = self.run("steam.exe", "link2ea://launchgame/0?platform=steam&theme=tf2")
+        p = self.run("steam.exe", "link2ea://launchgame/0?platform=steam&theme=tf2", **kwargs)
 
-        # The EA app is not the fastest thing, give it a second to launch
-        counter = 0
-        while counter < 10:
-            if self.is_ea_running():
-                break
-
-            self.log.info("EA App not yet running, sleeping")
-            time.sleep(5)
-
+        self.wait_for_ea()
         return p
 
 compat_map = {
@@ -318,7 +348,7 @@ compat_map = {
 
 class DebuggerBase(ABC):
     def __init__(self, game, compat):
-        self.log = logging.getLogger("nsgdb.debugger")
+        self.log = logging.getLogger("nsdbg.debugger")
         self.log.debug(f"Using {self.__class__.__name__}")
 
         self.game = game
@@ -350,12 +380,22 @@ class DebuggerX64DBG(DebuggerBase):
         self.log.info("Extracting x64dbg")
         archive.extractall(path=self.path)
 
-    def run(self, *pargs):
-        # x64dbg only supports directly launching 
-        return self.compat.run(self.path_64_exe, cwd=self.game.game_dir)
+    def run(self, *pargs, **kwargs):
+        self.log.info("Starting x64dbg")
+
+        kwargs.update({
+            "cwd": self.game.game_dir
+        })
+
+        return self.compat.run(self.path_64_exe, **kwargs)
+
+class DebuggerWinedbg(DebuggerBase):
+    def run(self, *pargs, **kwargs):
+        return self.compat.run("winedbg", *pargs, **kwargs)
 
 debug_map = {
     "x64dbg": DebuggerX64DBG,
+    "winedbg": DebuggerWinedbg,
 }
 
 ### Debugger/ ###
@@ -370,13 +410,15 @@ def main():
 
     ea = None
     if not pargs.no_ea:
-        ea = c.maybe_start_ea()
+        # Spawn EA in a new session
+        ea = c.maybe_start_ea(preexec_fn=os.setsid)
 
     d.run().wait()
 
-    if pargs.kill_ea and ea:
-        self.log.info("Attempting to kill EA Desktop")
-        ea.kill()
+    if not pargs.persist_ea and ea:
+        log.info("Terminating EA Desktop")
+        # Kill the whole session
+        os.killpg(os.getpgid(ea.pid), signal.SIGTERM)
 
 if __name__ == "__main__":
     main()
